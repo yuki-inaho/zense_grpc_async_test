@@ -48,21 +48,22 @@ key = cv2.waitKey(10)
 is_rgbd_enabled()
 count = 0
 
-
 while key & 0xFF != ord('q') or key & 0xFF != 27:
+
     with grpc.insecure_channel('localhost:50051', options=options) as channel:
         stub = zense_pb2_grpc.ZenseServiceStub(channel)
-        pdb.set_trace()
-        _response1 = stub.SendRGBDIRImage.future(zense_pb2.ImageRequest())
+        _response = stub.SendRGBDImage(zense_pb2.ImageRequest())        
         # serverが生きてるか死んでるか
-        if _response1.result().image_rgb.width == 0:
+        if _response.result().image_rgb.width == 0:
+            print("no")
             pass
         else:
-            print("OK1")            
-        _response2 = stub.SendRGBDImage.future(zense_pb2.ImageRequest())
-        # serverが生きてるか死んでるか
-        if _response2.result().image_rgb.width == 0:
+            print("OK1")
+    with grpc.insecure_channel('localhost:50051', options=options) as channel:
+        stub = zense_pb2_grpc.ZenseServiceStub(channel)
+        _response = stub.SendRGBDIRImage.future(zense_pb2.ImageRequest())
+        if _response.result().image_rgb.width == 0:
+            print("no2")
             pass
         else:
             print("OK2")
-    time.sleep(.5)

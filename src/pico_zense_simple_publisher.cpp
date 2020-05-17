@@ -27,7 +27,7 @@ using zense::ImageRGBDReply;
 using zense::ZenseService;
 
 #define INIT_SKIP_COUNTER -200
-#define MAX_SKIP_COUNTER 30
+#define MAX_SKIP_COUNTER 60
 #define MAX_HEARTBEAT_COUNTER 10
 
 template <typename response_type>
@@ -35,7 +35,7 @@ class PicoZenseAsyncCall {
  public:
   PicoZenseAsyncCall(ZenseService::AsyncService *service,
                      ServerCompletionQueue *cq)
-      : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE) {
+      : service_(service), cq_(cq), responder_(&ctx_), responder_rgbdir_(&ctx_), status_(CREATE) {
     Proceed();
   }
 
@@ -66,6 +66,25 @@ class PicoZenseAsyncCall {
                          ImageRGBDIRReply *reply);
 
   void Proceed(void){};
+  void Proceed2(void) {
+    if (status_ == CREATE) {
+      status_ = PROCESS;
+      service_->RequestSendRGBDIRImage(&ctx_, &request_, &responder_rgbdir_, cq_, cq_,
+                                      this);
+    } else if (status_ == PROCESS) {
+      if (!manager_) {
+        throw std::domain_error("Null Pointer Exception (Zense Manager)");
+      }
+      new PicoZenseAsyncCall<ImageRGBDIRReply>(service_, cq_);
+      SendRGBDIRImage(&ctx_, &request_, &reply_rgbdir_);
+      status_ = FINISH;
+      responder_rgbdir_.Finish(reply_rgbdir_, Status::OK, this);
+    } else {
+      std::cout << "fuck you" << std::endl;
+      GPR_ASSERT(status_ == FINISH);
+      delete this;
+    }
+  };
 
  private:
   std::shared_ptr<PicoZenseManager> manager_;
@@ -83,10 +102,31 @@ class PicoZenseAsyncCall {
 
   // The means to get back to the client.
   ServerAsyncResponseWriter<response_type> responder_;
+  ServerAsyncResponseWriter<ImageRGBDIRReply> responder_rgbdir_;
 
   // Let's implement a tiny state machine with the following states.
   enum CallStatus { CREATE, PROCESS, FINISH };
   CallStatus status_;  // The current serving state.
+};
+
+template <>
+void PicoZenseAsyncCall<ImageRGBDReply>::Proceed(void) {
+  if (status_ == CREATE) {
+    status_ = PROCESS;
+    service_->RequestSendRGBDImage(&ctx_, &request_, &responder_, cq_, cq_,
+                                     this);
+  } else if (status_ == PROCESS) {
+    if (!manager_) {
+      throw std::domain_error("Null Pointer Exception (Zense Manager)");
+    }
+    new PicoZenseAsyncCall<ImageRGBDReply>(service_, cq_);
+    SendRGBDImage(&ctx_, &request_, &reply_rgbd_);
+    status_ = FINISH;
+    responder_.Finish(reply_rgbd_, Status::OK, this);
+  } else {
+    GPR_ASSERT(status_ == FINISH);
+    delete this;
+  }
 };
 
 template <>
@@ -301,8 +341,11 @@ class PicoZenseAsyncServer final {
  public:
   ~PicoZenseAsyncServer() {
     close();
-    server_->Shutdown();
-    cq_->Shutdown();
+    server_rgbd_->Shutdown();   
+    //server_rgbdir_->Shutdown();   
+    cq_rgbd_->Shutdown();
+    cq_rgbdir_->Shutdown();    
+    //cq_->Shutdown();
   }
 
   void Setup(std::string cfgParamPath, std::string camKey, int device_index__);
@@ -318,14 +361,25 @@ class PicoZenseAsyncServer final {
   void Run() {
     //_zense_publisher =
     //    PicoZenseSimplePublisher(cfgParamPath, camKey, device_index__);
-    std::string server_address("localhost:50051");
-    ServerBuilder builder;
-    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service_);
-    cq_ = builder.AddCompletionQueue();
-    server_ = builder.BuildAndStart();
-    std::cout << "Server listening on " << server_address << std::endl;
+    std::string server_address_rgbd("localhost:50051");
+    ServerBuilder builder_rgbd;
+    builder_rgbd.AddListeningPort(server_address_rgbd, grpc::InsecureServerCredentials());
+    builder_rgbd.RegisterService(&service_rgbd_);
+    cq_rgbd_ = builder_rgbd.AddCompletionQueue();
+    cq_rgbdir_ = builder_rgbd.AddCompletionQueue();
+    server_rgbd_ = builder_rgbd.BuildAndStart();
 
+    /*
+    std::string server_address_rgbdir("localhost:50052");
+    ServerBuilder builder_rgbdir;
+    builder_rgbdir.AddListeningPort(server_address_rgbdir, grpc::InsecureServerCredentials());
+    builder_rgbdir.RegisterService(&service_rgbdir_);
+    cq_rgbdir_ = builder_rgbdir.AddCompletionQueue();    
+    server_rgbdir_ = builder_rgbdir.BuildAndStart();
+    */
+
+    //std::cout << "Server listening on " << server_address << std::endl;
+    
     HandleRpcs();
   }
 
@@ -333,12 +387,9 @@ class PicoZenseAsyncServer final {
   // Class encompasing the state and logic needed to serve a request.
   void HandleRpcs() {
     // Spawn a new PicoZenseAsyncCall instance to serve new clients.
-    usleep(5 * 1e6);  // To avoid high frequent sensor open call from
-                      // immediately after termination and rebooting
     while (!update()) {
       continue;
     }
-
 
     if (isWDR) {
 
@@ -347,26 +398,26 @@ class PicoZenseAsyncServer final {
         if (isIR) {
           
         } 
-        new PicoZenseAsyncCall<ImageRGBDIRReply>(&service_, cq_.get());
-        new PicoZenseAsyncCall<ImageRGBDReply>(&service_, cq_.get());
-        
+        //new PicoZenseAsyncCall<ImageRGBDIRReply>(&service_rgbd_, cq_rgbdir_.get());        
+        new PicoZenseAsyncCall<ImageRGBDReply>(&service_rgbd_, cq_rgbd_.get());                
+
       } else {
 
       }
     }
 
-    void *tag_rgbd, *tag_rgbdir;  // uniquely identifies a request.
+    void *tag_rgbd, *tag_rgbdir;
     bool ok_rgbd, ok_rgbdir;
 
     while (true) {
-      while (!update())continue;
-
+      update();
       if (isWDR) {
         
       } else {
         if (isRGB) {
-
-            GPR_ASSERT(cq_->Next(&tag_rgbdir, &ok_rgbdir));
+          /*
+            std::cout << "test2" << std::endl;
+            GPR_ASSERT(cq_rgbdir_->Next(&tag_rgbdir, &ok_rgbdir));
             static_cast<PicoZenseAsyncCall<ImageRGBDIRReply> *>(tag_rgbdir)
                 ->SetZenseManager(manager_);
             static_cast<PicoZenseAsyncCall<ImageRGBDIRReply> *>(tag_rgbdir)
@@ -377,9 +428,10 @@ class PicoZenseAsyncServer final {
                 ->SetDepthImage(depth_image_range1);
             static_cast<PicoZenseAsyncCall<ImageRGBDIRReply> *>(tag_rgbdir)
                 ->Proceed();
+                */
 
-
-            GPR_ASSERT(cq_->Next(&tag_rgbd, &ok_rgbd));
+            std::cout << "test1" << std::endl;
+            GPR_ASSERT(cq_rgbd_->Next(&tag_rgbd, &ok_rgbd));
             static_cast<PicoZenseAsyncCall<ImageRGBDReply> *>(tag_rgbd)
                 ->SetZenseManager(manager_);
             static_cast<PicoZenseAsyncCall<ImageRGBDReply> *>(tag_rgbd)
@@ -388,7 +440,10 @@ class PicoZenseAsyncServer final {
                 ->SetDepthImage(depth_image_range1);
             static_cast<PicoZenseAsyncCall<ImageRGBDReply> *>(tag_rgbd)
                 ->Proceed();
-          
+            static_cast<PicoZenseAsyncCall<ImageRGBDReply> *>(tag_rgbd)
+                ->Proceed2();
+
+
         }
       }
       std::cout << rgb_image.cols << std::endl;
@@ -422,9 +477,13 @@ class PicoZenseAsyncServer final {
   PicoZenseUndistorter undistorter;
   CameraParameter camera_param;
 
-  std::shared_ptr<ServerCompletionQueue> cq_;
-  ZenseService::AsyncService service_;
-  std::shared_ptr<Server> server_;
+  std::shared_ptr<ServerCompletionQueue> cq_rgbd_;
+  std::shared_ptr<ServerCompletionQueue> cq_rgbdir_;  
+  //std::shared_ptr<ServerCompletionQueue> cq_;
+  ZenseService::AsyncService service_rgbd_;
+  ZenseService::AsyncService service_rgbdir_;
+  std::shared_ptr<Server> server_rgbd_;
+  std::shared_ptr<Server> server_rgbdir_;
 };
 
 void PicoZenseAsyncServer::Setup(std::string cfgParamPath, std::string camKey,
